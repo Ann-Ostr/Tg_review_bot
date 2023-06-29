@@ -2,6 +2,7 @@ import logging
 import os
 import sys
 import time
+from http import HTTPStatus
 from logging import StreamHandler
 
 import requests
@@ -33,44 +34,32 @@ HOMEWORK_VERDICTS = {
 logging.basicConfig(
     level=logging.DEBUG,
     filename='my.log',
-    format='%(asctime)s, %(levelname)s, %(message)s',
     filemode='w'
 )
-
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
-
 # Обработчик согласно ТЗ
 handler = StreamHandler(stream=sys.stdout)
 logger.addHandler(handler)
-
 # Создаем форматер и применяем его к обработчику
 formatter = logging.Formatter(
-    '%(asctime)s - %(levelname)s - %(message)s')
+    '%(asctime)s [%(levelname)s] - '
+    '(%(filename)s).%(funcName)s:%(lineno)d - %(message)s')
 handler.setFormatter(formatter)
 
 
 def check_tokens():
     """Функция проверяет доступность переменных окружения."""
-    if (
-        PRACTICUM_TOKEN is None
-        or TELEGRAM_TOKEN is None
-        or TELEGRAM_CHAT_ID is None
-    ):
-        message = 'Отсутствует, как минимум, одна переменная окружения'
-        logger.critical(message)
-        return False
-    else:
-        return True
+    return all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID))
 
 
 def send_message(bot, message):
     """Функция отправляет сообщение в Telegram чат."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logger.debug('сообщение отправлено')
+        logger.debug('Cообщение отправлено')
     except Exception as error:
-        logger.error(error)
+        message = f'Ошибка при отправке сообщения: {error}'
+        logger.error(message)
 
 
 def get_api_answer(timestamp):
@@ -81,37 +70,47 @@ def get_api_answer(timestamp):
         payload = {'from_date': timestamp}
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
     except requests.RequestException():
-        message = f'''Сбой в работе программы:
-                    Эндпоинт https://practicum.yandex.ru/api/user_api
-                    /homework_statuses/111
+        message = f'''Сбой в работе программы: Эндпоинт {ENDPOINT}
                     недоступен. Код ответа API: {response.status_code}'''
         logger.error(message)
         send_message(Bot(TELEGRAM_TOKEN), message)
         raise requests.RequestException()
-    if response.status_code != 200:
-        message = f'''Ошибка в параметрах запроса. Код ответа API
-                    {response.status_code}'''
+    if response.status_code != HTTPStatus.OK:
+        message = (
+            'Ответ сервера не является успешным:'
+            f' request params = {payload}; {HEADERS}'
+            f' http_code = {response.status_code};'
+            f' reason = {response.reason}; content = {response.text}'
+        )
         logger.error(message)
         send_message(Bot(TELEGRAM_TOKEN), message)
         raise requests.RequestException()
-    else:
-        return response.json()
+    return response.json()
 
 
 def check_response(response):
     """Функция проверяет ответ API на соответствие документации."""
     if not isinstance(response, dict):
-        message = 'Ошибка полученных данных'
+        message = (
+            'Ошибка полученных данных:'
+            'тип данных ответа не соответствует документации.'
+            f'Получен тип {type(response)} вместо dict'
+        )
         logger.error(message)
         send_message(Bot(TELEGRAM_TOKEN), message)
         raise TypeError()
     homeworks = response.get('homeworks')
     if homeworks is None:
-        message = 'Ошибка полученных данных'
+        message = (
+            'Ошибка полученных данных:'
+            'В ответе отсутствует ключ homeworks.')
         send_message(Bot(TELEGRAM_TOKEN), message)
         raise Exception()
     elif not isinstance(homeworks, list):
-        message = 'Ошибка полученных данных'
+        message = (
+            'Ошибка полученных данных:'
+            'тип данных ответа не соответствует документации.'
+            f'Получен тип {type(homeworks)} вместо list')
         send_message(Bot(TELEGRAM_TOKEN), message)
         raise TypeError()
     else:
@@ -123,15 +122,23 @@ def check_response(response):
 
 def parse_status(homeworks):
     """Функция извлекает статус домашней работы."""
-    try:
+    if 'status' not in homeworks:
+        message = ('В ответе сервера отсутствует ключ'
+                   '"status" - "статус домашки"')
+        logger.error(message)
+        raise KeyError
+    else:
         status = homeworks.get("status")
-    except ValueError:
-        raise ValueError
     if status not in HOMEWORK_VERDICTS:
+        message = 'Полученный "status" не соответсвует документации'
+        logger.error(message)
         raise KeyError
     else:
         verdict = HOMEWORK_VERDICTS.get(status)
     if 'homework_name' not in homeworks:
+        message = ('В ответе сервера отсутствует ключ'
+                   '"homework_name" - "название домашки"')
+        logger.error(message)
         raise KeyError
     else:
         homework_name = homeworks.get("homework_name")
@@ -141,7 +148,7 @@ def parse_status(homeworks):
 def main():
     """Основная логика работы бота."""
     # Проверка наличия всех токенов
-    if check_tokens() is True:
+    if check_tokens():
         bot = Bot(token=TELEGRAM_TOKEN)
         previous_status = ''
         last_error = ''
@@ -166,6 +173,8 @@ def main():
                     send_message(bot, message)
             time.sleep(RETRY_PERIOD)
     else:
+        message = 'Отсутствует, как минимум, одна переменная окружения'
+        logger.critical(message)
         SystemExit()
 
 
