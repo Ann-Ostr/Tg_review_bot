@@ -1,2 +1,3 @@
-# homework_bot
-python telegram bot
+# Telegram_bot
+Python telegram bot
+Опрос стороннего API и уведомление об изменениях статуса
